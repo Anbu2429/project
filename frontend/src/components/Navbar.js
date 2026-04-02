@@ -18,12 +18,20 @@ export default function Navbar({ setIsLoggedIn }) {
         </Typography>
 
         <Stack direction="row" spacing={2}>
+          <Button color="inherit" onClick={() => navigate("/home")}>
+            Home
+          </Button>
+
           <Button color="inherit" onClick={() => navigate("/dashboard")}>
             Dashboard
           </Button>
 
           <Button color="inherit" onClick={() => navigate("/users")}>
             Active Users
+          </Button>
+
+          <Button color="inherit" onClick={() => navigate("/risk-analysis")}>
+            Risk Analysis
           </Button>
 
           <Button color="error" variant="contained" onClick={logout}>

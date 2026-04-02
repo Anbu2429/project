@@ -45,7 +45,7 @@ export default function Login({ setIsLoggedIn }) {
         localStorage.setItem("token", "admin-token");
 
         setIsLoggedIn(true);
-        navigate("/dashboard");
+        navigate("/Home");
       } else {
         setError("❌ Invalid email or password");
       }
