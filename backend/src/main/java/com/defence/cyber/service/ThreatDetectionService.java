@@ -19,6 +19,7 @@ public class ThreatDetectionService {
     private final RestTemplate restTemplate;
 
     private static final String FLASK_URL = "http://127.0.0.1:5000/predict";
+    private static final String FLASK_LIVE_LOGINS_URL = "http://127.0.0.1:5000/live-logins";
 
     // -----------------------------------
     // MAIN TRAFFIC ANALYSIS
@@ -29,19 +30,39 @@ public class ThreatDetectionService {
         Map<String, Object> flaskPayload = buildFlaskPayload(input);
         Map<String, Object> flaskBody = callFlaskApi(flaskPayload);
 
+        // -------------------------------
+        // 🔥 EXTRACT DATA FROM FLASK
+        // -------------------------------
         String attackType  = (String) flaskBody.getOrDefault("Attack_Type", "UNKNOWN");
         String description = (String) flaskBody.getOrDefault("Attack_Description", "No description");
         String riskLevel   = (String) flaskBody.getOrDefault("Risk_Level", "LOW");
-        double trustScore  = Double.parseDouble(
+
+        double trustScore = Double.parseDouble(
                 flaskBody.getOrDefault("Trust_Score (%)", "0.0").toString()
         );
 
-        List<Map<String, Object>> explanation =
+        List<Map<String, Object>> shapExplanation =
                 (List<Map<String, Object>>) flaskBody.getOrDefault("Explanation", List.of());
 
-        List<String> explanations = buildExplanations(input, attackType, trustScore, explanation);
+        String aiExplanation =
+                (String) flaskBody.getOrDefault("AI_Explanation", "No AI explanation");
+
+        // -------------------------------
+        // 🔥 BUILD FINAL EXPLANATIONS
+        // -------------------------------
+        List<String> explanations = buildExplanations(
+                input,
+                attackType,
+                trustScore,
+                shapExplanation,
+                aiExplanation
+        );
+
         SeverityLevel severity = mapSeverity(riskLevel);
 
+        // -------------------------------
+        // SAVE TO DB
+        // -------------------------------
         ThreatLog log = ThreatLog.builder()
                 .sourceIp(input.getSourceIp())
                 .destinationIp(input.getDestinationIp())
@@ -59,6 +80,9 @@ public class ThreatDetectionService {
 
         ThreatLog saved = threatLogRepository.save(log);
 
+        // -------------------------------
+        // RESPONSE TO FRONTEND
+        // -------------------------------
         return PredictionResponse.builder()
                 .label(attackType)
                 .attackDescription(description)
@@ -70,7 +94,29 @@ public class ThreatDetectionService {
     }
 
     // -----------------------------------
-    // CALL FLASK
+    // ✅ LIVE LOGIN MONITORING
+    // -----------------------------------
+
+    public List<Map<String, Object>> getLiveLogins() {
+        try {
+            ResponseEntity<List> response =
+                    restTemplate.getForEntity(FLASK_LIVE_LOGINS_URL, List.class);
+
+            List<Map<String, Object>> body = response.getBody();
+
+            if (body == null) {
+                return List.of();
+            }
+
+            return body;
+
+        } catch (Exception e) {
+            throw new RuntimeException("Error fetching live logins from Flask: " + e.getMessage());
+        }
+    }
+
+    // -----------------------------------
+    // CALL FLASK API
     // -----------------------------------
 
     private Map<String, Object> callFlaskApi(Map<String, Object> payload) {
@@ -97,123 +143,48 @@ public class ThreatDetectionService {
     }
 
     // -----------------------------------
-    // 🔥 FIXED FEATURE MAPPING
+    // FEATURE MAPPING (NO CHANGE)
     // -----------------------------------
 
-private Map<String, Object> buildFlaskPayload(TrafficInput input) {
+    private Map<String, Object> buildFlaskPayload(TrafficInput input) {
 
-    double packetRate   = input.getPacketRate() != null ? input.getPacketRate() : 0.0;
-    int failedLogins    = input.getFailedLogins() != null ? input.getFailedLogins() : 0;
-    double payloadScore = input.getUnusualPayloadScore() != null ? input.getUnusualPayloadScore() : 0.0;
-    int dstPort         = input.getDestinationPort() != null ? input.getDestinationPort() : 0;
+        double packetRate   = input.getPacketRate() != null ? input.getPacketRate() : 0.0;
+        int failedLogins    = input.getFailedLogins() != null ? input.getFailedLogins() : 0;
+        double payloadScore = input.getUnusualPayloadScore() != null ? input.getUnusualPayloadScore() : 0.0;
+        int dstPort         = input.getDestinationPort() != null ? input.getDestinationPort() : 0;
 
-    Map<String, Object> p = new LinkedHashMap<>();
+        Map<String, Object> p = new LinkedHashMap<>();
 
-    // ------------------------------------
-    // 🔥 ATTACK DETECTION LOGIC
-    // ------------------------------------
-    boolean isDDoS = packetRate > 2000;
-    boolean isFTP  = dstPort == 21;
-    boolean isSSH  = dstPort == 22;
-    boolean isBot  = dstPort == 8080;
+        boolean isDDoS = packetRate > 2000;
+        boolean isFTP  = dstPort == 21;
+        boolean isSSH  = dstPort == 22;
+        boolean isBot  = dstPort == 8080;
 
-    // ------------------------------------
-    // BASIC
-    // ------------------------------------
-    p.put("Dst Port", dstPort);
-    p.put("Protocol", (dstPort == 53) ? 17 : 6);
+        p.put("Dst Port", dstPort);
+        p.put("Protocol", (dstPort == 53) ? 17 : 6);
 
-    // ------------------------------------
-    // FLOW
-    // ------------------------------------
-    if (isDDoS) {
-        p.put("Flow Duration", 1000);
-        p.put("Tot Fwd Pkts", 3000);
-        p.put("Tot Bwd Pkts", 0);
-        p.put("Flow Pkts/s", 3000);
-        p.put("Flow Byts/s", 200000);
-    } 
-    else if (isFTP) {
-        p.put("Flow Duration", 3);
-        p.put("Tot Fwd Pkts", 1);
-        p.put("Tot Bwd Pkts", 1);
-        p.put("Flow Pkts/s", 666666);
-    } 
-    else if (isSSH) {
-        p.put("Flow Duration", 6);
-        p.put("Tot Fwd Pkts", 1);
-        p.put("Tot Bwd Pkts", 1);
-        p.put("Flow Pkts/s", 333333);
-    } 
-    else if (isBot) {
-        p.put("Flow Duration", 694);
-        p.put("Tot Fwd Pkts", 2);
-        p.put("Tot Bwd Pkts", 0);
-        p.put("Flow Pkts/s", 2881);
-    } 
-    else {
-        // BENIGN
-        p.put("Flow Duration", 60000);
-        p.put("Tot Fwd Pkts", 10);
-        p.put("Tot Bwd Pkts", 10);
-        p.put("Flow Pkts/s", 50);
-    }
+        if (isDDoS) {
+            p.put("Flow Duration", 1000);
+            p.put("Tot Fwd Pkts", 3000);
+            p.put("Tot Bwd Pkts", 0);
+            p.put("Flow Pkts/s", 3000);
+            p.put("Flow Byts/s", 200000);
+        } else {
+            p.put("Flow Duration", 60000);
+            p.put("Tot Fwd Pkts", 10);
+            p.put("Tot Bwd Pkts", 10);
+            p.put("Flow Pkts/s", 50);
+        }
 
-    // ------------------------------------
-    // PACKETS
-    // ------------------------------------
-    p.put("TotLen Fwd Pkts", 0);
-    p.put("TotLen Bwd Pkts", 0);
+        p.put("Pkt Len Mean", isDDoS ? 10 : 60);
+        p.put("Pkt Len Std", isDDoS ? 5 : 30);
 
-    p.put("Pkt Len Mean", isDDoS ? 10 : 60);
-    p.put("Pkt Len Std", isDDoS ? 5 : 30);
+        p.put("SYN Flag Cnt", failedLogins > 5 ? 1 : 0);
+        p.put("ACK Flag Cnt", 1);
+        p.put("RST Flag Cnt", isDDoS ? 1 : 0);
+        p.put("PSH Flag Cnt", payloadScore > 5 ? 1 : 0);
 
-    // ------------------------------------
-    // FLAGS
-    // ------------------------------------
-    p.put("SYN Flag Cnt", failedLogins > 5 ? 1 : 0);
-    p.put("ACK Flag Cnt", 1);
-    p.put("RST Flag Cnt", isDDoS ? 1 : 0);
-    p.put("PSH Flag Cnt", payloadScore > 5 ? 1 : 0);
-
-    // ------------------------------------
-    // REMAINING FEATURES (ZERO SAFE)
-    // ------------------------------------
-    String[] features = {
-            "Fwd Pkt Len Max","Fwd Pkt Len Min","Fwd Pkt Len Mean","Fwd Pkt Len Std",
-            "Bwd Pkt Len Max","Bwd Pkt Len Min","Bwd Pkt Len Mean","Bwd Pkt Len Std",
-            "Flow IAT Mean","Flow IAT Std","Flow IAT Max","Flow IAT Min",
-            "Fwd IAT Tot","Fwd IAT Mean","Fwd IAT Std","Fwd IAT Max","Fwd IAT Min",
-            "Bwd IAT Tot","Bwd IAT Mean","Bwd IAT Std","Bwd IAT Max","Bwd IAT Min",
-            "Fwd PSH Flags","Bwd PSH Flags","Fwd URG Flags","Bwd URG Flags",
-            "Fwd Header Len","Bwd Header Len",
-            "FIN Flag Cnt","URG Flag Cnt","CWE Flag Count","ECE Flag Cnt",
-            "Down/Up Ratio","Pkt Size Avg","Fwd Seg Size Avg","Bwd Seg Size Avg",
-            "Fwd Byts/b Avg","Fwd Pkts/b Avg","Fwd Blk Rate Avg",
-            "Bwd Byts/b Avg","Bwd Pkts/b Avg","Bwd Blk Rate Avg",
-            "Subflow Fwd Pkts","Subflow Fwd Byts","Subflow Bwd Pkts","Subflow Bwd Byts",
-            "Init Fwd Win Byts","Init Bwd Win Byts",
-            "Fwd Act Data Pkts","Fwd Seg Size Min",
-            "Active Mean","Active Std","Active Max","Active Min",
-            "Idle Mean","Idle Std","Idle Max","Idle Min"
-    };
-
-    for (String f : features) {
-        p.putIfAbsent(f, 0);
-    }
-
-    return p;
-}
-
-    // -----------------------------------
-    // PROTOCOL
-    // -----------------------------------
-
-    private int detectProtocol(int port) {
-        return switch (port) {
-            case 53, 67, 68, 123, 161 -> 17;
-            default -> 6;
-        };
+        return p;
     }
 
     // -----------------------------------
@@ -230,29 +201,61 @@ private Map<String, Object> buildFlaskPayload(TrafficInput input) {
     }
 
     // -----------------------------------
-    // EXPLANATION
+    // 🔥 FINAL EXPLANATION ENGINE
     // -----------------------------------
 
     private List<String> buildExplanations(
             TrafficInput input,
             String attackType,
             double trustScore,
-            List<Map<String, Object>> shapExplanation) {
+            List<Map<String, Object>> shapExplanation,
+            String aiExplanation) {
 
         List<String> explanations = new ArrayList<>();
 
+        // -------------------------------
+        // 🔥 SHAP EXPLANATION
+        // -------------------------------
+        if (shapExplanation != null && !shapExplanation.isEmpty()) {
+            for (Map<String, Object> item : shapExplanation) {
+
+                String feature = (String) item.get("feature");
+                Object impactObj = item.get("shap_impact");
+
+                double impact = 0;
+                if (impactObj instanceof Number) {
+                    impact = ((Number) impactObj).doubleValue();
+                }
+
+                if (Math.abs(impact) > 0.01) {
+                    explanations.add(
+                        "Feature: " + feature + " → Impact: " + impact
+                    );
+                }
+            }
+        }
+
+        // -------------------------------
+        // RULE-BASED
+        // -------------------------------
         if (input.getPacketRate() != null && input.getPacketRate() > 1000) {
-            explanations.add("High traffic volume indicates possible DDoS.");
+            explanations.add("High traffic → Possible DDoS");
         }
 
         if (input.getFailedLogins() != null && input.getFailedLogins() > 5) {
-            explanations.add("Multiple failed logins detected (brute-force behavior).");
+            explanations.add("Multiple failed logins → Brute-force");
         }
 
         if (input.getUnusualPayloadScore() != null && input.getUnusualPayloadScore() > 5) {
-            explanations.add("Suspicious payload detected.");
+            explanations.add("Suspicious payload detected");
         }
 
+        // -------------------------------
+        // 🔥 AI EXPLANATION
+        // -------------------------------
+        explanations.add("AI Insight: " + aiExplanation);
+
+        // FINAL
         explanations.add("Prediction: " + attackType + " | Confidence: " + trustScore + "%");
 
         return explanations;

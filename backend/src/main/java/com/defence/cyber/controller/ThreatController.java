@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/threat")
@@ -75,7 +76,7 @@ public class ThreatController {
     @GetMapping("/logs/{id}")
     public ResponseEntity<?> getLogById(@PathVariable Long id) {
         try {
-            
+
             Optional<ThreatLog> log = threatLogRepository.findById(id);
 
             if (log.isPresent()) {
@@ -121,5 +122,27 @@ public class ThreatController {
     @GetMapping("/health")
     public ResponseEntity<?> healthCheck() {
         return ResponseEntity.ok("✅ Threat Detection Service Running");
+    }
+
+    // ============================================
+    // ✅ 6. LIVE LOGIN MONITORING
+    // ============================================
+    @GetMapping("/active-users")
+    public ResponseEntity<?> activeUsers() {
+        try {
+
+            List<Map<String, Object>> users = threatDetectionService.getLiveLogins();
+
+            if (users == null || users.isEmpty()) {
+                return ResponseEntity.ok(List.of());
+            }
+
+            return ResponseEntity.ok(users);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("❌ Error fetching active users: " + e.getMessage());
+        }
     }
 }
